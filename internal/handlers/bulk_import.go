@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"strings"
 
@@ -34,6 +35,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 
 	tx, err := h.DB.Begin()
 	if err != nil {
+		log.Printf("bulk import: begin transaction failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bulk import could not start"})
 		return
 	}
@@ -53,6 +55,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 
 		categoryName, err := canonicalCategory(tx, item.Category)
 		if err != nil {
+			log.Printf("bulk import: category lookup failed barcode=%q category=%q: %v", item.Barcode, item.Category, err)
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "category not found",
 				"category": item.Category,
@@ -77,6 +80,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 				categoryName,
 			).Scan(&productID)
 			if err != nil {
+				log.Printf("bulk import: product create failed barcode=%q name=%q category=%q sale_price=%v purchase_price=%v: %v", item.Barcode, item.Name, categoryName, item.Price, item.PurchasePrice, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be created", "barcode": item.Barcode})
 				return
 			}
@@ -85,6 +89,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 					INSERT INTO stock_movements (product_id, movement_date, type, quantity, note)
 					VALUES ($1, CURRENT_DATE, 'in', $2, 'CSV toplu ürün aktarımı')
 				`, productID, item.Stock); err != nil {
+					log.Printf("bulk import: initial stock insert failed barcode=%q product_id=%d stock=%v: %v", item.Barcode, productID, item.Stock, err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "initial stock could not be added", "barcode": item.Barcode})
 					return
 				}
@@ -94,6 +99,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 			continue
 		}
 		if err != nil {
+			log.Printf("bulk import: existing product lookup failed barcode=%q: %v", item.Barcode, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "existing product could not be checked", "barcode": item.Barcode})
 			return
 		}
@@ -124,6 +130,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 				    updated_at = NOW()
 				WHERE id = $5
 			`, strings.TrimSpace(item.Name), item.Price, item.PurchasePrice, categoryName, productID); err != nil {
+				log.Printf("bulk import: product update failed barcode=%q product_id=%d category=%q sale_price=%v purchase_price=%v: %v", item.Barcode, productID, categoryName, item.Price, item.PurchasePrice, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be updated", "barcode": item.Barcode})
 				return
 			}
@@ -135,6 +142,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 	}
 
 	if err := tx.Commit(); err != nil {
+		log.Printf("bulk import: commit failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bulk import could not be committed"})
 		return
 	}
