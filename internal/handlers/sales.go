@@ -232,29 +232,65 @@ func (h *SaleHandler) createSaleTx(ctx context.Context, tx *sql.Tx, req models.C
 func lockProduct(ctx context.Context, tx *sql.Tx, itemReq models.CreateSaleItemRequest) (saleProduct, error) {
 	var product saleProduct
 
-	query := `
-		SELECT 
-			p.id, 
-			p.name, 
-			COALESCE(p.barcode, '') AS barcode, 
-			p.sale_price AS price, 
-			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock
-		FROM products p
-		LEFT JOIN stock_movements sm ON sm.product_id = p.id
-		WHERE `
-
 	var row *sql.Row
+
 	if itemReq.ProductID > 0 {
-		row = tx.QueryRowContext(ctx, query+`p.id = $1 GROUP BY p.id, p.name, p.barcode, p.sale_price FOR UPDATE OF p`, itemReq.ProductID)
+		row = tx.QueryRowContext(ctx, `
+			SELECT
+				id,
+				name,
+				COALESCE(barcode, ''),
+				sale_price
+			FROM products
+			WHERE id = $1
+			  AND is_active = TRUE
+			FOR UPDATE
+		`, itemReq.ProductID)
 	} else if itemReq.Barcode != "" {
-		row = tx.QueryRowContext(ctx, query+`p.barcode = $1 GROUP BY p.id, p.name, p.barcode, p.sale_price FOR UPDATE OF p`, itemReq.Barcode)
+		row = tx.QueryRowContext(ctx, `
+			SELECT
+				id,
+				name,
+				COALESCE(barcode, ''),
+				sale_price
+			FROM products
+			WHERE barcode = $1
+			  AND is_active = TRUE
+			FOR UPDATE
+		`, itemReq.Barcode)
 	} else {
 		return product, errInvalidSaleItem
 	}
 
-	if err := row.Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock); errors.Is(err, sql.ErrNoRows) {
+	err := row.Scan(
+		&product.ID,
+		&product.Name,
+		&product.Barcode,
+		&product.Price,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
 		return product, errProductNotFound
-	} else if err != nil {
+	}
+	if err != nil {
+		return product, err
+	}
+
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(
+			SUM(
+				CASE
+					WHEN type IN ('in', 'correction') THEN quantity
+					WHEN type IN ('out', 'waste') THEN -quantity
+					ELSE 0
+				END
+			),
+			0
+		)
+		FROM stock_movements
+		WHERE product_id = $1
+	`, product.ID).Scan(&product.Stock)
+
+	if err != nil {
 		return product, err
 	}
 
