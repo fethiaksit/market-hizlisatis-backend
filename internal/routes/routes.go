@@ -53,6 +53,7 @@ func Setup(db *sql.DB, cfg config.Config) *gin.Engine {
 				products.POST("", productHandler.Create)
 				products.POST("/bulk-import", productHandler.BulkImport)
 				products.PUT("/:id", productHandler.Update)
+				products.PUT("/:id/favorite", productHandler.ToggleFavorite)
 				products.DELETE("/:id", productHandler.Delete)
 			}
 
