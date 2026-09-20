@@ -64,6 +64,11 @@ func Setup(db *sql.DB, cfg config.Config) *gin.Engine {
 				sales.GET("/:id", saleHandler.GetByID)
 			}
 
+			pos := protected.Group("/pos")
+			{
+				pos.GET("/eod-summary", saleHandler.EndOfDaySummary)
+			}
+
 			reports := protected.Group("/reports")
 			{
 				reports.GET("/daily", reportHandler.Daily)
