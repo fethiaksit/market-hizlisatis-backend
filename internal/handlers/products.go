@@ -271,6 +271,94 @@ func (h *ProductHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, product.ToResponse())
 }
 
+func (h *ProductHandler) ToggleFavorite(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
+		return
+	}
+
+	var req struct {
+		IsFavorite bool `json:"isFavorite"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tx, err := h.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "favorite update could not start"})
+		return
+	}
+	defer tx.Rollback()
+
+	if req.IsFavorite {
+		var current bool
+		if err := tx.QueryRow(`SELECT is_bestseller FROM products WHERE id = $1 AND is_active = TRUE`, id).Scan(&current); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be checked"})
+			}
+			return
+		}
+
+		if !current {
+			var count int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM products WHERE is_active = TRUE AND is_bestseller = TRUE`).Scan(&count); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "favorites could not be counted"})
+				return
+			}
+			if count >= 10 {
+				c.JSON(http.StatusConflict, gin.H{"error": "En fazla 10 favori ürün seçebilirsiniz."})
+				return
+			}
+
+			var nextOrder int
+			if err := tx.QueryRow(`SELECT COALESCE(MAX(bestseller_order), 0) + 1 FROM products WHERE is_bestseller = TRUE`).Scan(&nextOrder); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "favorite order could not be calculated"})
+				return
+			}
+
+			if _, err := tx.Exec(`
+				UPDATE products
+				SET is_bestseller = TRUE, bestseller_order = $1, updated_at = NOW()
+				WHERE id = $2 AND is_active = TRUE
+			`, nextOrder, id); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be added to favorites"})
+				return
+			}
+		}
+	} else {
+		res, err := tx.Exec(`
+			UPDATE products
+			SET is_bestseller = FALSE, bestseller_order = 0, updated_at = NOW()
+			WHERE id = $1 AND is_active = TRUE
+		`, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be removed from favorites"})
+			return
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "favorite update could not be committed"})
+		return
+	}
+
+	product, err := h.findProductByID(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be fetched"})
+		return
+	}
+	c.JSON(http.StatusOK, product.ToResponse())
+}
+
 func (h *ProductHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
