@@ -28,6 +28,7 @@ func Setup(db *sql.DB, cfg config.Config) *gin.Engine {
 	productHandler := &handlers.ProductHandler{DB: db}
 	saleHandler := &handlers.SaleHandler{DB: db}
 	reportHandler := &handlers.ReportHandler{DB: db}
+	categoryHandler := &handlers.CategoryHandler{DB: db}
 
 	api := router.Group("/api")
 	{
@@ -36,6 +37,13 @@ func Setup(db *sql.DB, cfg config.Config) *gin.Engine {
 		protected := api.Group("")
 		protected.Use(middleware.AuthRequired(cfg.JWTSecret))
 		{
+			categories := protected.Group("/categories")
+			{
+				categories.GET("", categoryHandler.List)
+				categories.POST("", categoryHandler.Create)
+				categories.PUT("/:id", categoryHandler.Update)
+			}
+
 			products := protected.Group("/products")
 			{
 				products.GET("", productHandler.List)
