@@ -18,9 +18,25 @@ type ProductHandler struct {
 
 func (h *ProductHandler) List(c *gin.Context) {
 	rows, err := h.DB.Query(`
-		SELECT id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
-		FROM products
-		ORDER BY name ASC
+		SELECT 
+			p.id, 
+			p.name, 
+			COALESCE(p.barcode, '') AS barcode, 
+			p.sale_price AS price, 
+			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
+			p.category, 
+			p.brand, 
+			p.description, 
+			p.image_url, 
+			p.is_bestseller, 
+			p.bestseller_order, 
+			p.created_at, 
+			p.updated_at
+		FROM products p
+		LEFT JOIN stock_movements sm ON sm.product_id = p.id
+		WHERE p.is_active = TRUE
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		ORDER BY p.name ASC
 	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "products could not be listed"})
@@ -47,10 +63,25 @@ func (h *ProductHandler) List(c *gin.Context) {
 
 func (h *ProductHandler) Bestsellers(c *gin.Context) {
 	rows, err := h.DB.Query(`
-		SELECT id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
-		FROM products
-		WHERE is_bestseller = TRUE
-		ORDER BY bestseller_order ASC, name ASC
+		SELECT 
+			p.id, 
+			p.name, 
+			COALESCE(p.barcode, '') AS barcode, 
+			p.sale_price AS price, 
+			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
+			p.category, 
+			p.brand, 
+			p.description, 
+			p.image_url, 
+			p.is_bestseller, 
+			p.bestseller_order, 
+			p.created_at, 
+			p.updated_at
+		FROM products p
+		LEFT JOIN stock_movements sm ON sm.product_id = p.id
+		WHERE p.is_active = TRUE AND p.is_bestseller = TRUE
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		ORDER BY p.bestseller_order ASC, p.name ASC
 	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bestseller products could not be listed"})
@@ -116,29 +147,42 @@ func (h *ProductHandler) Create(c *gin.Context) {
 		return
 	}
 
-	var product models.Product
+	var productID int64
 	err := h.DB.QueryRow(`
-		INSERT INTO products (name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
+		INSERT INTO products (name, barcode, sale_price, purchase_price, category, brand, description, image_url, is_bestseller, bestseller_order, is_active)
+		VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, TRUE)
+		RETURNING id
 	`,
 		req.Name,
 		req.Barcode,
 		req.Price,
-		req.Stock,
 		models.NullString(req.Category),
 		models.NullString(req.Brand),
 		models.NullString(req.Description),
 		models.NullString(req.ImageURL),
 		req.IsBestseller,
 		req.BestsellerOrder,
-	).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
+	).Scan(&productID)
 	if isUniqueViolation(err) {
 		c.JSON(http.StatusConflict, gin.H{"error": "barcode already exists"})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be created"})
+		return
+	}
+
+	// Initial stock movement if stock > 0
+	if req.Stock > 0 {
+		h.DB.Exec(`
+			INSERT INTO stock_movements (product_id, movement_date, type, quantity, note)
+			VALUES ($1, CURRENT_DATE, 'in', $2, 'Hızlı Satış Başlangıç Stoğu')
+		`, productID, req.Stock)
+	}
+
+	product, err := h.findProductByID(productID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "product fetch failed after creation"})
 		return
 	}
 
@@ -158,27 +202,23 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		return
 	}
 
-	var product models.Product
-	err = h.DB.QueryRow(`
+	res, err := h.DB.Exec(`
 		UPDATE products
 		SET name = $1,
 		    barcode = $2,
-		    price = $3,
-		    stock = $4,
-		    category = $5,
-		    brand = $6,
-		    description = $7,
-		    image_url = $8,
-		    is_bestseller = $9,
-		    bestseller_order = $10,
+		    sale_price = $3,
+		    category = $4,
+		    brand = $5,
+		    description = $6,
+		    image_url = $7,
+		    is_bestseller = $8,
+		    bestseller_order = $9,
 		    updated_at = NOW()
-		WHERE id = $11
-		RETURNING id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
+		WHERE id = $10
 	`,
 		req.Name,
 		req.Barcode,
 		req.Price,
-		req.Stock,
 		models.NullString(req.Category),
 		models.NullString(req.Brand),
 		models.NullString(req.Description),
@@ -186,17 +226,25 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		req.IsBestseller,
 		req.BestsellerOrder,
 		id,
-	).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
-		return
-	}
+	)
 	if isUniqueViolation(err) {
 		c.JSON(http.StatusConflict, gin.H{"error": "barcode already exists"})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be updated"})
+		return
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
+		return
+	}
+
+	product, err := h.findProductByID(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "product fetch failed"})
 		return
 	}
 
@@ -210,7 +258,7 @@ func (h *ProductHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	result, err := h.DB.Exec("DELETE FROM products WHERE id = $1", id)
+	result, err := h.DB.Exec("UPDATE products SET is_active = FALSE WHERE id = $1", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be deleted"})
 		return
@@ -232,9 +280,14 @@ func (h *ProductHandler) Delete(c *gin.Context) {
 func (h *ProductHandler) findProductByID(id int64) (models.Product, error) {
 	var product models.Product
 	err := h.DB.QueryRow(`
-		SELECT id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
-		FROM products
-		WHERE id = $1
+		SELECT 
+			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price, 
+			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
+			p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		FROM products p
+		LEFT JOIN stock_movements sm ON sm.product_id = p.id
+		WHERE p.id = $1
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 	`, id).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
 }
@@ -242,9 +295,14 @@ func (h *ProductHandler) findProductByID(id int64) (models.Product, error) {
 func (h *ProductHandler) findProductByBarcode(barcode string) (models.Product, error) {
 	var product models.Product
 	err := h.DB.QueryRow(`
-		SELECT id, name, barcode, price, stock, category, brand, description, image_url, is_bestseller, bestseller_order, created_at, updated_at
-		FROM products
-		WHERE barcode = $1
+		SELECT 
+			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price, 
+			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
+			p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		FROM products p
+		LEFT JOIN stock_movements sm ON sm.product_id = p.id
+		WHERE p.barcode = $1
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 	`, barcode).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
 }

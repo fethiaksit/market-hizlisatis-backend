@@ -50,7 +50,7 @@ func (h *SaleHandler) Create(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	tx, err := h.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	tx, err := h.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "sale transaction could not start"})
 		return
@@ -77,7 +77,7 @@ func (h *SaleHandler) Create(c *gin.Context) {
 
 func (h *SaleHandler) List(c *gin.Context) {
 	rows, err := h.DB.Query(`
-		SELECT id, sale_no, payment_method, total_amount, created_by, created_at
+		SELECT id, sale_no, payment_method, total_amount, COALESCE(created_by, 1), created_at
 		FROM sales
 		ORDER BY created_at DESC
 		LIMIT 500
@@ -127,7 +127,7 @@ func (h *SaleHandler) GetByID(c *gin.Context) {
 
 func (h *SaleHandler) Today(c *gin.Context) {
 	rows, err := h.DB.Query(`
-		SELECT id, sale_no, payment_method, total_amount, created_by, created_at
+		SELECT id, sale_no, payment_method, total_amount, COALESCE(created_by, 1), created_at
 		FROM sales
 		WHERE created_at >= CURRENT_DATE
 		  AND created_at < CURRENT_DATE + INTERVAL '1 day'
@@ -183,8 +183,10 @@ func (h *SaleHandler) createSaleTx(ctx context.Context, tx *sql.Tx, req models.C
 		if err != nil {
 			return models.Sale{}, err
 		}
+
+		// STOK KONTROLU (stock_movements UZERINDEN)
 		if product.Stock < itemReq.Quantity {
-			return models.Sale{}, fmt.Errorf("%w for product %s", errStockInsufficient, product.Barcode)
+			return models.Sale{}, fmt.Errorf("%w for product %s (Available: %.2f, Requested: %.2f)", errStockInsufficient, product.Barcode, product.Stock, itemReq.Quantity)
 		}
 
 		lineTotal := itemReq.Quantity * product.Price
@@ -201,19 +203,11 @@ func (h *SaleHandler) createSaleTx(ctx context.Context, tx *sql.Tx, req models.C
 			return models.Sale{}, err
 		}
 
+		// STOK HAREKETI KAYDI (type = 'out') - TEK STOK KAYNAGI ZEYTINERP
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE products
-			SET stock = stock - $1,
-			    updated_at = NOW()
-			WHERE id = $2
-		`, itemReq.Quantity, product.ID); err != nil {
-			return models.Sale{}, err
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO stock_movements (product_id, movement_type, quantity, note)
-			VALUES ($1, 'sale', $2, $3)
-		`, product.ID, -itemReq.Quantity, "Sale "+saleNo); err != nil {
+			INSERT INTO stock_movements (product_id, movement_date, type, quantity, unit_price, note)
+			VALUES ($1, CURRENT_DATE, 'out', $2, $3, $4)
+		`, product.ID, itemReq.Quantity, product.Price, "Hızlı Satış POS: Fiş No "+saleNo); err != nil {
 			return models.Sale{}, err
 		}
 
@@ -238,21 +232,22 @@ func (h *SaleHandler) createSaleTx(ctx context.Context, tx *sql.Tx, req models.C
 func lockProduct(ctx context.Context, tx *sql.Tx, itemReq models.CreateSaleItemRequest) (saleProduct, error) {
 	var product saleProduct
 
+	query := `
+		SELECT 
+			p.id, 
+			p.name, 
+			COALESCE(p.barcode, '') AS barcode, 
+			p.sale_price AS price, 
+			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock
+		FROM products p
+		LEFT JOIN stock_movements sm ON sm.product_id = p.id
+		WHERE `
+
 	var row *sql.Row
 	if itemReq.ProductID > 0 {
-		row = tx.QueryRowContext(ctx, `
-			SELECT id, name, barcode, price, stock
-			FROM products
-			WHERE id = $1
-			FOR UPDATE
-		`, itemReq.ProductID)
+		row = tx.QueryRowContext(ctx, query+`p.id = $1 GROUP BY p.id, p.name, p.barcode, p.sale_price FOR UPDATE OF p`, itemReq.ProductID)
 	} else if itemReq.Barcode != "" {
-		row = tx.QueryRowContext(ctx, `
-			SELECT id, name, barcode, price, stock
-			FROM products
-			WHERE barcode = $1
-			FOR UPDATE
-		`, itemReq.Barcode)
+		row = tx.QueryRowContext(ctx, query+`p.barcode = $1 GROUP BY p.id, p.name, p.barcode, p.sale_price FOR UPDATE OF p`, itemReq.Barcode)
 	} else {
 		return product, errInvalidSaleItem
 	}
@@ -269,7 +264,7 @@ func lockProduct(ctx context.Context, tx *sql.Tx, itemReq models.CreateSaleItemR
 func (h *SaleHandler) findSaleWithItems(id int64) (models.Sale, error) {
 	var sale models.Sale
 	err := h.DB.QueryRow(`
-		SELECT id, sale_no, payment_method, total_amount, created_by, created_at
+		SELECT id, sale_no, payment_method, total_amount, COALESCE(created_by, 1), created_at
 		FROM sales
 		WHERE id = $1
 	`, id).Scan(&sale.ID, &sale.SaleNo, &sale.PaymentMethod, &sale.TotalAmount, &sale.CreatedBy, &sale.CreatedAt)
