@@ -156,7 +156,7 @@ func (h *ProductHandler) Create(c *gin.Context) {
 	req.Category = categoryName
 
 	var productID int64
-	err := h.DB.QueryRow(`
+	err = h.DB.QueryRow(`
 		INSERT INTO products (name, barcode, sale_price, purchase_price, category, brand, description, image_url, is_bestseller, bestseller_order, is_active)
 		VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, TRUE)
 		RETURNING id
