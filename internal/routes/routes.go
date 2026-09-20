@@ -51,6 +51,7 @@ func Setup(db *sql.DB, cfg config.Config) *gin.Engine {
 				products.GET("/barcode/:barcode", productHandler.GetByBarcode)
 				products.GET("/:id", productHandler.GetByID)
 				products.POST("", productHandler.Create)
+				products.POST("/bulk-import", productHandler.BulkImport)
 				products.PUT("/:id", productHandler.Update)
 				products.DELETE("/:id", productHandler.Delete)
 			}
