@@ -156,6 +156,47 @@ func (h *SaleHandler) Today(c *gin.Context) {
 	c.JSON(http.StatusOK, sales)
 }
 
+
+func (h *SaleHandler) EndOfDaySummary(c *gin.Context) {
+	var (
+		date             string
+		totalRevenue     float64
+		totalCash        float64
+		totalCard        float64
+		totalCredit      float64
+		transactionCount int64
+	)
+
+	err := h.DB.QueryRow(`
+		SELECT
+			CURRENT_DATE::text,
+			COALESCE(SUM(total_amount), 0),
+			COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total_amount ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN payment_method = 'card' THEN total_amount ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN payment_method = 'current' THEN total_amount ELSE 0 END), 0),
+			COUNT(*)
+		FROM sales
+		WHERE created_at >= CURRENT_DATE
+		  AND created_at < CURRENT_DATE + INTERVAL '1 day'
+	`).Scan(&date, &totalRevenue, &totalCash, &totalCard, &totalCredit, &transactionCount)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "end of day summary could not be generated"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"date":             date,
+		"totalRevenue":     totalRevenue,
+		"totalCash":        totalCash,
+		"totalCard":        totalCard,
+		"totalCredit":      totalCredit,
+		"transactionCount": transactionCount,
+		"cancelledCount":   0,
+		"isClosed":         false,
+		"sales":            []interface{}{},
+	})
+}
+
 var (
 	errProductNotFound   = errors.New("product not found")
 	errStockInsufficient = errors.New("stock is insufficient")
