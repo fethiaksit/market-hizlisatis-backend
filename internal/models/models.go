@@ -18,6 +18,7 @@ type Product struct {
 	Name            string         `json:"name"`
 	Barcode         string         `json:"barcode"`
 	Price           float64        `json:"price"`
+	PurchasePrice   float64        `json:"purchasePrice"`
 	Stock           float64        `json:"stock"`
 	Category        sql.NullString `json:"-"`
 	Brand           sql.NullString `json:"-"`
@@ -34,6 +35,7 @@ type ProductResponse struct {
 	Name            string    `json:"name"`
 	Barcode         string    `json:"barcode"`
 	Price           float64   `json:"price"`
+	PurchasePrice   float64   `json:"purchasePrice"`
 	Stock           float64   `json:"stock"`
 	Category        string    `json:"category"`
 	Brand           string    `json:"brand"`
@@ -49,6 +51,7 @@ type ProductRequest struct {
 	Name            string  `json:"name" binding:"required"`
 	Barcode         string  `json:"barcode" binding:"required"`
 	Price           float64 `json:"price" binding:"required,gte=0"`
+	PurchasePrice   float64 `json:"purchasePrice" binding:"gte=0"`
 	Stock           float64 `json:"stock" binding:"gte=0"`
 	Category        string  `json:"category"`
 	Brand           string  `json:"brand"`
@@ -110,6 +113,7 @@ func (p Product) ToResponse() ProductResponse {
 		Name:            p.Name,
 		Barcode:         p.Barcode,
 		Price:           p.Price,
+		PurchasePrice:   p.PurchasePrice,
 		Stock:           p.Stock,
 		Category:        nullStringValue(p.Category),
 		Brand:           nullStringValue(p.Brand),
