@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -147,6 +148,13 @@ func (h *ProductHandler) Create(c *gin.Context) {
 		return
 	}
 
+	categoryName, err := h.canonicalCategoryName(req.Category)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category not found", "category": req.Category})
+		return
+	}
+	req.Category = categoryName
+
 	var productID int64
 	err := h.DB.QueryRow(`
 		INSERT INTO products (name, barcode, sale_price, purchase_price, category, brand, description, image_url, is_bestseller, bestseller_order, is_active)
@@ -201,6 +209,13 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	categoryName, err := h.canonicalCategoryName(req.Category)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category not found", "category": req.Category})
+		return
+	}
+	req.Category = categoryName
 
 	res, err := h.DB.Exec(`
 		UPDATE products
@@ -305,6 +320,22 @@ func (h *ProductHandler) findProductByBarcode(barcode string) (models.Product, e
 		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 	`, barcode).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
+}
+
+func (h *ProductHandler) canonicalCategoryName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", nil
+	}
+
+	var canonical string
+	err := h.DB.QueryRow(`
+		SELECT name
+		FROM categories
+		WHERE is_active = TRUE
+		  AND LOWER(BTRIM(name)) = LOWER(BTRIM($1))
+	`, name).Scan(&canonical)
+	return canonical, err
 }
 
 type productScanner interface {
