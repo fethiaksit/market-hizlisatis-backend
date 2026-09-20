@@ -119,23 +119,13 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 				UPDATE products
 				SET name = $1,
 				    sale_price = $2,
-				    purchase_price = $3,
+				    purchase_price = CASE WHEN $3 > 0 THEN $3 ELSE purchase_price END,
 				    category = $4,
 				    updated_at = NOW()
 				WHERE id = $5
 			`, strings.TrimSpace(item.Name), item.Price, item.PurchasePrice, categoryName, productID); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "product could not be updated", "barcode": item.Barcode})
 				return
-			}
-			if item.Stock > 0 {
-				if _, err := tx.Exec(`
-					INSERT INTO stock_movements (product_id, movement_date, type, quantity, note)
-					VALUES ($1, CURRENT_DATE, 'in', $2, 'CSV toplu aktarım stok girişi')
-				`, productID, item.Stock); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "stock could not be added", "barcode": item.Barcode})
-					return
-				}
-				stockAdded++
 			}
 			updated++
 		default:
