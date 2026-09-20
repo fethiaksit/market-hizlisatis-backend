@@ -147,20 +147,51 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 	})
 }
 
+func normalizeCategoryKey(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'")
+	value = strings.ReplaceAll(value, "\u00a0", " ")
+	value = strings.ToLower(value)
+
+	replacer := strings.NewReplacer(
+		"ı", "i",
+		"ç", "c",
+		"ğ", "g",
+		"ö", "o",
+		"ş", "s",
+		"ü", "u",
+	)
+	value = replacer.Replace(value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func canonicalCategory(tx *sql.Tx, raw string) (string, error) {
-	name := strings.TrimSpace(raw)
-	if name == "" {
+	key := normalizeCategoryKey(raw)
+	if key == "" {
 		return "", nil
 	}
-	var canonical string
-	err := tx.QueryRow(`
+
+	rows, err := tx.Query(`
 		SELECT name
 		FROM categories
 		WHERE is_active = TRUE
-		  AND LOWER(BTRIM(name)) = LOWER(BTRIM($1))
-	`, name).Scan(&canonical)
+	`)
 	if err != nil {
 		return "", err
 	}
-	return canonical, nil
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return "", err
+		}
+		if normalizeCategoryKey(name) == key {
+			return name, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return "", sql.ErrNoRows
 }
