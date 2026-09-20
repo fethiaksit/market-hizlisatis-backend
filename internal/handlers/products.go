@@ -23,7 +23,8 @@ func (h *ProductHandler) List(c *gin.Context) {
 			p.id, 
 			p.name, 
 			COALESCE(p.barcode, '') AS barcode, 
-			p.sale_price AS price, 
+			p.sale_price AS price,
+			p.purchase_price,
 			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
 			p.category, 
 			p.brand, 
@@ -36,7 +37,7 @@ func (h *ProductHandler) List(c *gin.Context) {
 		FROM products p
 		LEFT JOIN stock_movements sm ON sm.product_id = p.id
 		WHERE p.is_active = TRUE
-		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.purchase_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 		ORDER BY p.name ASC
 	`)
 	if err != nil {
@@ -68,7 +69,8 @@ func (h *ProductHandler) Bestsellers(c *gin.Context) {
 			p.id, 
 			p.name, 
 			COALESCE(p.barcode, '') AS barcode, 
-			p.sale_price AS price, 
+			p.sale_price AS price,
+			p.purchase_price,
 			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
 			p.category, 
 			p.brand, 
@@ -81,7 +83,7 @@ func (h *ProductHandler) Bestsellers(c *gin.Context) {
 		FROM products p
 		LEFT JOIN stock_movements sm ON sm.product_id = p.id
 		WHERE p.is_active = TRUE AND p.is_bestseller = TRUE
-		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.purchase_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 		ORDER BY p.bestseller_order ASC, p.name ASC
 	`)
 	if err != nil {
@@ -158,12 +160,13 @@ func (h *ProductHandler) Create(c *gin.Context) {
 	var productID int64
 	err = h.DB.QueryRow(`
 		INSERT INTO products (name, barcode, sale_price, purchase_price, category, brand, description, image_url, is_bestseller, bestseller_order, is_active)
-		VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, TRUE)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
 		RETURNING id
 	`,
 		req.Name,
 		req.Barcode,
 		req.Price,
+		req.PurchasePrice,
 		req.Category,
 		req.Brand,
 		req.Description,
@@ -222,18 +225,20 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		SET name = $1,
 		    barcode = $2,
 		    sale_price = $3,
-		    category = $4,
-		    brand = $5,
-		    description = $6,
-		    image_url = $7,
-		    is_bestseller = $8,
-		    bestseller_order = $9,
+		    purchase_price = $4,
+		    category = $5,
+		    brand = $6,
+		    description = $7,
+		    image_url = $8,
+		    is_bestseller = $9,
+		    bestseller_order = $10,
 		    updated_at = NOW()
-		WHERE id = $10
+		WHERE id = $11
 	`,
 		req.Name,
 		req.Barcode,
 		req.Price,
+		req.PurchasePrice,
 		req.Category,
 		req.Brand,
 		req.Description,
@@ -296,14 +301,15 @@ func (h *ProductHandler) findProductByID(id int64) (models.Product, error) {
 	var product models.Product
 	err := h.DB.QueryRow(`
 		SELECT 
-			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price, 
+			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price,
+			p.purchase_price,
 			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
 			p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 		FROM products p
 		LEFT JOIN stock_movements sm ON sm.product_id = p.id
 		WHERE p.id = $1
-		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
-	`, id).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.purchase_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+	`, id).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.PurchasePrice, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
 }
 
@@ -311,14 +317,15 @@ func (h *ProductHandler) findProductByBarcode(barcode string) (models.Product, e
 	var product models.Product
 	err := h.DB.QueryRow(`
 		SELECT 
-			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price, 
+			p.id, p.name, COALESCE(p.barcode, '') AS barcode, p.sale_price AS price,
+			p.purchase_price,
 			COALESCE(SUM(CASE WHEN sm.type IN ('in', 'correction') THEN sm.quantity WHEN sm.type IN ('out', 'waste') THEN -sm.quantity ELSE 0 END), 0) AS stock, 
 			p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
 		FROM products p
 		LEFT JOIN stock_movements sm ON sm.product_id = p.id
 		WHERE p.barcode = $1
-		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
-	`, barcode).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
+		GROUP BY p.id, p.name, p.barcode, p.sale_price, p.purchase_price, p.category, p.brand, p.description, p.image_url, p.is_bestseller, p.bestseller_order, p.created_at, p.updated_at
+	`, barcode).Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.PurchasePrice, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
 }
 
@@ -344,7 +351,7 @@ type productScanner interface {
 
 func scanProduct(scanner productScanner) (models.Product, error) {
 	var product models.Product
-	err := scanner.Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
+	err := scanner.Scan(&product.ID, &product.Name, &product.Barcode, &product.Price, &product.PurchasePrice, &product.Stock, &product.Category, &product.Brand, &product.Description, &product.ImageURL, &product.IsBestseller, &product.BestsellerOrder, &product.CreatedAt, &product.UpdatedAt)
 	return product, err
 }
 
