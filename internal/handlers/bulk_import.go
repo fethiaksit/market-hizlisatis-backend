@@ -125,7 +125,7 @@ func (h *ProductHandler) BulkImport(c *gin.Context) {
 				UPDATE products
 				SET name = $1,
 				    sale_price = $2,
-				    purchase_price = CASE WHEN $3 > 0 THEN $3 ELSE purchase_price END,
+				    purchase_price = CASE WHEN $3::NUMERIC > 0 THEN $3::NUMERIC ELSE purchase_price END,
 				    category = $4,
 				    updated_at = NOW()
 				WHERE id = $5
